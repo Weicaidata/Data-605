@@ -1,0 +1,423 @@
+---
+title: "WCai_Final"
+author: "Weijian Cai"
+date: "May 25, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r,echo = FALSE,warning = FALSE, message = FALSE}
+library(caret)
+library(randomForest)
+library(MASS)
+library(Matrix)
+library(matlib)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(kableExtra)
+```
+
+##Problem 1
+
+**Calculate as a minimum the below probabilities a through c.**
+Generate random variable X , Y 
+```{r}
+set.seed(12345)
+N <- 10
+n <- 10000
+mu <- sigma <- (N + 1)/2
+df <- data.frame(X = runif(n, min=1, max=N), 
+                 Y = rnorm(n, mean=mu, sd=sigma))
+summary(df$X)
+summary(df$Y)
+```
+
+Probability:
+```{r}
+## Given that: 
+x <- median(df$X)
+y <- as.numeric(quantile(df$Y)["25%"])
+x
+y
+```
+
+1. $P(X>x|X>y)$ Interpretation:Probability that X is greater than its median given that X is greater than the first quartile of Y
+
+$P(X>x|X>y) = \frac{P(X>x,X>y)}{P(X>y)}$
+
+```{r}
+P_Xx_and_Xy <- df %>%
+  filter(X > x,
+         X > y) %>%
+  nrow() / n
+P_Xy <- df %>%
+  filter(X > y) %>%
+  nrow() / n
+ans_1a <- P_Xx_and_Xy / P_Xy
+ans_1a
+```
+
+
+2. $P(X>x,Y>y)$ Interpretation: Probability that X is grater than its median and Y is greater than the first quartile of Y. 
+```{r}
+ans_1b <- df %>%
+  filter(X > x,
+         Y > y) %>%
+  nrow() / n
+ans_1b
+```
+
+3. $P(X<x|X>y)$ Interpretation: Probability that X is smaller than its median given that X is greate than the first quartile of Y. 
+
+```{r}
+P_Xsx_and_Xgy <- df %>%
+  filter(X < x,
+         X > y) %>%
+  nrow() / n
+P_Xgy <- df %>%
+  filter(X > y) %>%
+  nrow() / n
+ans_1c <- P_Xsx_and_Xgy / P_Xgy
+ans_1c
+```
+
+
+**Investigate whether P(X>x and Y>y)=P(X>x)P(Y>y) by building a table and evaluating the marginal and joint probabilities.**
+
+```{r echo=TRUE, eval=TRUE}
+# Create Joint Probabilities
+temp <- df %>%
+  mutate(A = ifelse(X > x, " X > x", " X <= x"),
+         B = ifelse(Y > y, " Y > y", " Y <= y")) %>%
+  group_by(A, B) %>%
+  summarise(count = n()) %>%
+  mutate(probability = count / n)
+# Create Marginal Probabilities
+temp <- temp %>%
+  ungroup() %>%
+  group_by(A) %>%
+  summarise(count = sum(count),
+            probability = sum(probability)) %>%
+  mutate(B = "Total") %>%
+  bind_rows(temp)
+temp <- temp %>%
+  ungroup() %>%
+  group_by(B) %>%
+  summarise(count = sum(count),
+            probability = sum(probability)) %>%
+  mutate(A = "Total") %>%
+  bind_rows(temp)
+# Create Table
+temp %>%
+  select(-count) %>%
+  spread(A, probability) %>%
+  rename(" " = B) %>%
+  kable() %>%
+  kable_styling()
+```
+**Check to see if independence holds by using Fisher's Exact Test and the Chi Square Test. What is the difference between the two? Which is most appropriate?**
+
+```{r, echo=TRUE, eval=TRUE, comment=NA}
+count_data <- temp %>%
+  filter(A != "Total",
+         B != "Total") %>%
+  select(-probability) %>%
+  spread(A, count) %>%
+  as.data.frame()
+row.names(count_data) <- count_data$B
+count_data <- count_data %>%
+  select(-B) %>%
+  as.matrix() 
+fisher.test(count_data)
+```
+
+```{r, echo=TRUE, eval=TRUE, comment=NA}
+chisq.test(count_data)
+```
+
+*Fisher's Exact Test is for is used when sample size less than 5, while the Chi Square Test is used when the cell sizes are large.*
+
+
+
+
+
+#Problem 2
+
+```{r, echo=FALSE,warning = FALSE, message= FALSE}
+library(ggplot2)
+library(e1071)
+library(pander)
+library(reshape2)
+library(MASS)
+library(rcompanion)
+```
+
+**Load Data**
+```{r load-data}
+# Load training data from GitHub
+train <- read.csv('https://raw.githubusercontent.com/Weicaidata/Data-605/main/train.csv')
+test <- read.csv('https://raw.githubusercontent.com/Weicaidata/Data-605/main/test.csv')
+```
+
+### Descriptive and Inferential Statistics
+**Provide univariate descriptive statistics and appropriate plots for the training data set.**
+```{r}
+summary(train)
+```
+**Provide a scatterplot matrix for at least two of the independent variables and the dependent variable.**
+
+```{r, echo=TRUE}
+train %>%
+  select(LotArea, GrLivArea, BedroomAbvGr, SalePrice) %>%
+  pairs()
+```
+
+**Derive a correlation matrix for any three quantitative variables in the dataset.**
+
+```{r, echo=TRUE}
+correlation_matrix <- train %>%
+  select(LotArea, GrLivArea, BedroomAbvGr) %>%
+  cor() %>%
+  as.matrix()
+correlation_matrix %>%
+  kable() %>%
+  kable_styling()
+```
+
+**Test the hypothesis that the correlations between each pairwise set of variables is 0 and provide an 80% confidence interval.**
+
+```{r, results="asis"}
+zero_vars <- 0
+test <- 0
+variables <- train %>%
+  select(-SalePrice) %>%
+  names()
+for(variable in variables){
+  d <- train[,names(train) == variable]
+  if(is.numeric(d)){
+    test <- test + 1
+    results <- cor.test(train$SalePrice, d, conf.level = 0.8)
+    if(0 > results$conf.int[1] & results$conf.int[2] > 0){
+      hypothesis_test_results <- "Yes"
+      zero_vars <- zero_vars + 1
+    } else {
+      hypothesis_test_results <- "No"
+    }
+    print(paste(variable,': test result', hypothesis_test_results))
+  }
+}
+```
+
+**Discuss the meaning of your analysis. Would you be worried about familywise error? Why or why not?**
+
+*I would be worried be woried about family-wise error.*
+
+*The family-wise error rate would be: ${FWER} = 1 - (1 - .2)^`r zero_vars` = 1 - `r .8 ^ zero_vars` = `r 1 - (.8^ zero_vars)`$*
+
+
+### Linear Algebra and Correlation
+
+**Invert your correlation matrix from above.**
+
+```{r}
+precision_matrix <- inv(correlation_matrix)
+precision_matrix %>%
+  kable() %>%
+  kable_styling()
+```
+
+**Multiply the correlation matrix by the precision matrix, and then multiply the precision matrix by the correlation matrix.**
+
+*To generate the identity matrix.*
+
+```{r}
+correlation_matrix %*% precision_matrix %>%
+  round() %>%
+  kable() %>%
+  kable_styling()
+```
+
+
+```{r}
+precision_matrix %*% correlation_matrix %>%
+  round() %>%
+  kable() %>%
+  kable_styling()
+```
+
+**Conduct LU decomposition on the matrix.**
+
+```{r}
+lu_decomposition <- Matrix::expand(lu(correlation_matrix))
+```
+
+*The LU decomposition should yield the correlation matrix after multiplying the two components.*
+
+```{r}
+A <- lu_decomposition$L %*% lu_decomposition$U %>%
+  as.matrix() 
+colnames(A) <- colnames(correlation_matrix)
+rownames(A) <- rownames(correlation_matrix)
+A %>%
+  kable() %>%
+  kable_styling()
+```
+
+
+```{r}
+correlation_matrix %>%
+  kable() %>%
+  kable_styling()
+```
+
+
+### Calculus-Based Probability & Statistics
+
+```{r, echo=FALSE}
+ggplot(train, aes(BsmtUnfSF)) + geom_density() + 
+  geom_vline(xintercept = mean(train$BsmtUnfSF), color = "red")+ 
+  geom_vline(xintercept = median(train$BsmtUnfSF), color = "blue") +
+  annotate("text", x = 700, y = 0.0005, label = "Mean", color="red") + 
+  annotate("text", x = 300, y = 0.0005, label = "Median", color="blue")
+```
+
+*The minimum (`r min(train$BsmtUnfSF)`) is not smaller than zero so we don't need to shift the data.*
+
+```{r}
+lambda <- fitdistr(train$BsmtUnfSF, densfun = "exponential")$estimate
+```
+
+*The optimal value for $\lambda$ is `r lambda`.*
+
+```{r}
+samples <- rexp(1000, rate = lambda)
+```
+
+**Plot a histogram and compare it with a histogram of your original variable.**
+
+```{r, echo=FALSE}
+histogram_data <- data.frame(Value = samples, Data = c("Sample"))
+histogram_data <- data.frame(Value = train$BsmtUnfSF, Data = c("Original")) %>%
+  rbind(histogram_data) %>%
+  mutate(Data = as.factor(Data))
+ggplot(histogram_data, aes(Value, fill = Data)) + geom_histogram(bins = 50, alpha = 0.5)
+```
+
+
+**Using the exponential pdf, find the 5th and 95th percentiles using the cumulative distribution function (CDF).**
+
+
+*The PDF would be $f(x;\lambda) = \lambda e^{-\lambda x}$ where $x \geq 0$ and otherwise zero.*
+
+*The CDF would be $F(x;\lambda) = 1 - e^{-\lambda x}$.  lambda is `r lambda`. To find the 5th percentile we need to solve for x in:*
+
+$$0.05 = 1 - e^{-`r lambda` x}$$
+
+$$-0.95 = - e^{-`r lambda` x}$$
+
+$$-ln(0.95) = `r lambda` x$$
+
+$$x = \frac{-ln(0.95)}{`r lambda`} = `r -log(0.95)/lambda`$$
+*For the 95th percentile we need to solve for x in:*
+
+$$0.95 = 1 - e^{-`r lambda` x}$$
+
+$$-0.05 = - e^{-`r lambda` x}$$
+
+$$-ln(0.05) = `r lambda` x$$
+
+$$x = \frac{-ln(0.05)}{`r lambda`} = `r -log(0.05)/lambda`$$
+
+*So the 5th and 95th percentiles are approximately `r round(-log(0.95)/lambda,0)` and `r round(-log(0.05)/lambda,0)`, respectively.*
+
+**Also generate a 95% confidence interval from the empirical data, assuming normality.**
+
+```{r, comment=NA}
+mu <- mean(train$BsmtUnfSF)
+s <- sd(train$BsmtUnfSF)
+n <- nrow(train)
+error <- qnorm(0.975) * s / sqrt(n)
+ci <- c(mu - error, mu + error)
+names(ci) <- c("5%", "95%")
+ci
+```
+
+*the percentiles would be `r round(mu + (-1.645 * s), 0)` and `r round(mu + (1.645 * s), 0)`.*
+
+**Finally, provide the empirical 5th percentile and 95th percentile of the data. Discuss.**
+
+```{r, comment=NA}
+quantile(train$BsmtUnfSF, c(0.05, 0.95))
+```
+
+*The actual 5th percentile is `r quantile(train$BsmtUnfSF, c(0.05))` and the 95th is `r quantile(train$BsmtUnfSF, c(0.95))`.  So the findings are summarized in the following table:*
+
+| Method | 5% | 95% |
+| ------ |:--:|:---:|
+| Exponential CDF | `r round(-log(0.95)/lambda,0)` | `r round(-log(0.05)/lambda,0)` |
+| Normal 95% CI | `r round(ci[1])`      | `r round(ci[2])` |
+| Normal Percentiles | `r round(mu + (-1.645 * s), 0)`  | `r round(mu + (1.645 * s), 0)` | 
+| Emperical Percentiles | `r round(quantile(train$BsmtUnfSF, c(0.05)),0)`       | `r round(quantile(train$BsmtUnfSF, c(0.95)),0)` |
+
+*If we model the data as exponentially distributed the 5th percentile is `r round(-log(0.95)/lambda,0)`.  If we model it as normally distributed the 5th is at `r round(mu + (-1.645 * s), 0)` which in the context of square footage does not make any sense. The actual 5th percentile is `r round(quantile(train$BsmtUnfSF, c(0.05)),0)`. The difference is explained to the assumed shape/distibution of the underlying data.*
+
+*Looking at the 95th percentile we have `r round(-log(0.5)/lambda,0)` if the data are exponentially distributed, `r round(mu + (1.645 * s), 0)` if it is normally distributed and `r round(quantile(train$BsmtUnfSF, c(0.95)),0)` in reality.  Again the difference is due to the assumed shape.*
+
+*I have left out the 95% CI from the discussion because the confidence interval is a way of estimating the mean of the population.  We would know if we took 100 estimates that the actual mean falls within the confidence intervals 95% of the time.  Within this context it is meaningless.*
+
+
+### Modeling
+
+**Build some type of multiple regression model**
+
+*To drop out the variables that are missing a lot of data.*
+```{r}
+fill_holes <- function(df){
+  df %>%
+    mutate(BedroomAbvGr = replace_na(BedroomAbvGr, 0),
+           BsmtFullBath = replace_na(BsmtFullBath, 0),
+           BsmtHalfBath = replace_na(BsmtHalfBath, 0),
+           BsmtUnfSF = replace_na(BsmtUnfSF, 0),
+          EnclosedPorch = replace_na(EnclosedPorch, 0),
+          Fireplaces = replace_na(Fireplaces, 0),
+          GarageArea = replace_na(GarageArea, 0),
+          GarageCars = replace_na(GarageCars, 0),
+          HalfBath = replace_na(HalfBath, 0),
+          KitchenAbvGr = replace_na(KitchenAbvGr, 0),
+          LotFrontage = replace_na(LotFrontage, 0),
+          OpenPorchSF = replace_na(OpenPorchSF, 0),
+          PoolArea = replace_na(PoolArea, 0),
+          ScreenPorch = replace_na(ScreenPorch, 0),
+          TotRmsAbvGrd = replace_na(TotRmsAbvGrd, 0),
+          WoodDeckSF = replace_na(WoodDeckSF, 0)) 
+}
+train = fill_holes(train)
+test <- read.csv('https://raw.githubusercontent.com/Weicaidata/Data-605/main/test.csv')
+test  = fill_holes(test)
+```
+
+
+```{r}
+model <- lm(SalePrice ~ OverallQual + YearBuilt + YearRemodAdd + TotalBsmtSF +  GrLivArea + FullBath + TotRmsAbvGrd + GarageCars + GarageArea, data = train)
+summary(model)
+```
+```{r}
+mySalePrice <- predict(model,test)
+##create dataframe
+prediction <- data.frame( Id = test[,"Id"],  SalePrice = mySalePrice)
+prediction[prediction<0] <- 0
+prediction <- replace(prediction,is.na(prediction),0)
+  
+head(prediction)
+```
+
+```{r}
+#write.csv(prediction, file="prediction.csv", row.names = FALSE)
+```
+
+![Username: kenenec, Score: 0.40616]
